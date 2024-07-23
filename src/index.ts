@@ -2,7 +2,7 @@
 import { Client, GatewayIntentBits } from 'discord.js';
 import { REST } from '@discordjs/rest';
 import { Routes } from 'discord-api-types/v9';
-import { token, clientId, guildId } from './config';
+import { token, clientId } from './config'; // Removed guildId for global commands
 
 // Create a new Discord client instance with specified intents
 const client = new Client({ 
@@ -33,14 +33,14 @@ const commands = [
 // Create a new REST instance for interacting with Discord API
 const rest = new REST({ version: '9' }).setToken(token);
 
-// Async function to register slash commands
+// Async function to register slash commands globally
 (async () => {
     try {
         console.log('Started refreshing application (/) commands.');
 
-        // Register the commands with the Discord API
+        // Register the commands globally with the Discord API
         await rest.put(
-            Routes.applicationGuildCommands(clientId, guildId),
+            Routes.applicationCommands(clientId),  // Global commands
             { body: commands },
         );
 
@@ -61,9 +61,15 @@ client.on('interactionCreate', async interaction => {
     // Handle the 'ping' command
     if (commandName === 'ping') {
         try {
-            // Send a DM to the user and acknowledge the command
-            await interaction.user.send('Pong!');
-            await interaction.reply({ content: 'I sent you a DM!', ephemeral: true });
+            // Check if the interaction is in a guild or a DM
+            if (interaction.guild) {
+                // Interaction in a guild (server)
+                await interaction.user.send('Pong! This command was triggered from a server.');
+                await interaction.reply('I sent you a DM!');
+            } else {
+                // Interaction in a DM
+                await interaction.reply('Pong! This command was triggered from a DM.');
+            }
         } catch (error) {
             // Log any errors that occur and reply with an error message
             console.error(`Could not send DM to ${interaction.user.tag}.\n`, error);
