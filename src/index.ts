@@ -1,79 +1,151 @@
-// Import necessary classes and constants from discord.js and discord-api-types
-import { Client, GatewayIntentBits } from 'discord.js';
-import { REST } from '@discordjs/rest';
-import { Routes } from 'discord-api-types/v9';
-import { token, clientId } from './config'; // Removed guildId for global commands
+import {
+    Client,
+    GatewayIntentBits,
+    REST,
+    Routes,
+    CommandInteraction,
+    Interaction,
+    EmbedBuilder,
+    ColorResolvable,
+    CommandInteractionOptionResolver,
+} from 'discord.js';
+import { token, clientId, guildId } from './config';
 
-// Create a new Discord client instance with specified intents
-const client = new Client({ 
+const client = new Client({
     intents: [
-        GatewayIntentBits.Guilds, 
-        GatewayIntentBits.GuildMessages, 
-        GatewayIntentBits.MessageContent, 
-        GatewayIntentBits.DirectMessages 
-    ]
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.DirectMessages,
+    ],
 });
 
-// Event listener that runs once when the client is ready
 client.once('ready', () => {
     console.log('Ready!');
 });
 
-// Log in to Discord with the client's token
 client.login(token);
 
-// Define slash commands to be registered
 const commands = [
     {
-        name: 'ping',
-        description: 'Replies with Pong!',
+        name: 'create',
+        description: 'Initiate your account!',
+    },
+    {
+        name: 'import',
+        description: 'Import a pre-existing account!',
+        options: [
+            {
+                name: 'key',
+                type: 3, // STRING type
+                description: 'The key of the pre-existing account',
+                required: true,
+            },
+        ],
+    },
+    {
+        name: 'verify',
+        description: 'Check if inputted key matches session key!',
+        options: [
+            {
+                name: 'key',
+                type: 3, // STRING type
+                description: 'The key you are trying to verify',
+                required: true,
+            },
+        ],
+    },
+    {
+        name: 'exit',
+        description: 'Quit current session!',
     },
 ];
 
-// Create a new REST instance for interacting with Discord API
-const rest = new REST({ version: '9' }).setToken(token);
+const rest = new REST({ version: '10' }).setToken(token);
 
-// Async function to register slash commands globally
 (async () => {
     try {
         console.log('Started refreshing application (/) commands.');
 
-        // Register the commands globally with the Discord API
-        await rest.put(
-            Routes.applicationCommands(clientId),  // Global commands
-            { body: commands },
+        const currentCommands = await rest.get(Routes.applicationGuildCommands(clientId, guildId)) as any[];
+
+        await Promise.all(
+            currentCommands.map(command =>
+                rest.delete(Routes.applicationGuildCommand(clientId, guildId, command.id))
+            )
         );
+
+        await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: commands });
+        await rest.put(Routes.applicationCommands(clientId), { body: commands });
 
         console.log('Successfully reloaded application (/) commands.');
     } catch (error) {
-        // Log any errors that occur during registration
         console.error(error);
     }
 })();
 
-// Event listener for handling interactions (slash commands)
-client.on('interactionCreate', async interaction => {
-    // Ensure the interaction is a command
+const sessionKeys = new Map<string, string>();
+
+client.on('interactionCreate', async (interaction: Interaction) => {
     if (!interaction.isCommand()) return;
 
-    const { commandName } = interaction;
+    const commandInteraction = interaction as CommandInteraction;
+    const { commandName, user, guild, options } = commandInteraction;
+    const userId = user.id;
 
-    // Handle the 'ping' command
-    if (commandName === 'ping') {
-        try {
-            // Check if the interaction is in a guild or a DM
-            if (interaction.guild) {
-                // Interaction in a guild (server)
-                await interaction.user.send('Pong! This command was triggered from a server.');
-                await interaction.reply('I sent you a DM!');
-            } else {
-                // Interaction in a DM
-                await interaction.reply('Pong! This command was triggered from a DM.');
+    const replyWithEmbed = async (description: string, color: ColorResolvable = '#70C7BA', ephemeral: boolean = false) => {
+        const embed = new EmbedBuilder().setColor(color).setDescription(description);
+        await commandInteraction.reply({ embeds: [embed], ephemeral });
+    };
+
+    const dmUserWithEmbed = async (description: string, color: ColorResolvable = '#70C7BA') => {
+        const embed = new EmbedBuilder().setColor(color).setDescription(description);
+        await user.send({ embeds: [embed] });
+    };
+
+    try {
+        if (guild) {
+            await replyWithEmbed('You cannot use this bot in a server. I have sent you a private DM to run your commands!', '#70C7BA', true);
+            await dmUserWithEmbed('Type a command here to begin!');
+        } else {
+            if (commandName === 'create') {
+                if (sessionKeys.has(userId)) {
+                    await replyWithEmbed('A session is already active. Use /exit to end it first.', '#FF0000');
+                } else {
+                    sessionKeys.set(userId, 'TEMPORARY_KEY');
+                    await replyWithEmbed('Account created. Temporary key assigned.');
+                }
+            } else if (commandName === 'import') {
+                if (sessionKeys.has(userId)) {
+                    await replyWithEmbed('A session is already active. Use /exit to end it first.', '#FF0000');
+                } else {
+                    const key = options.get('key')?.value as string;
+                    sessionKeys.set(userId, key);
+                    await replyWithEmbed(`Imported account with key: ${key}`);
+                }
+            } else if (commandName === 'verify') {
+                if (!sessionKeys.has(userId)) {
+                    await replyWithEmbed('No active session. Use /create or /import to start.', '#FF0000');
+                } else {
+                    const key = options.get('key')?.value as string;
+                    const sessionKey = sessionKeys.get(userId);
+                    if (sessionKey === key) {
+                        await replyWithEmbed(`Key '${key}' verified successfully.`);
+                    } else {
+                        await replyWithEmbed('Key verification failed.', '#FF0000');
+                    }
+                }
+            } else if (commandName === 'exit') {
+                if (!sessionKeys.has(userId)) {
+                    await replyWithEmbed('No active session to exit.', '#FF0000');
+                } else {
+                    sessionKeys.delete(userId);
+                    await replyWithEmbed('Session ended. Key cleared.');
+                }
             }
-        } catch (error) {
-            // Log any errors that occur and reply with an error message
-            console.error(`Could not send DM to ${interaction.user.tag}.\n`, error);
-            await interaction.reply({ content: 'I could not send you a DM. Do you have DMs disabled?', ephemeral: true });
         }
+    } catch (error) {
+        console.error(`Could not send DM to ${user.tag}.\n`, error);
+        await replyWithEmbed('I could not send you a DM. Do you have DMs disabled?', '#FF0000', true);
     }
 });
